@@ -1,0 +1,213 @@
+---
+title: "Weight Lifting Exercise (WLE) Prediction"
+author: "J. Register"
+date: "3/30/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(caret)
+library(tidyr)
+library(ggplot2)
+library(cvms)
+library(ggimage)
+library(ggnewscale)
+library(rsvg)
+library(gridExtra)
+knitr::opts_chunk$set(echo = TRUE)
+```
+## SUMMARY
+
+Key question:  **Can we classify a physical exercise as "well performed" based on sensor data which tracks body movement during the execution of the exercise?**
+
+### Results:
+A **random forest** model using **5-fold cross-validation** based on sensory data resulted in the following outcomes:
+
+* Estimated Test Model Accuracy is 99.44% with Kappa value of .991
+* Out of Sample Error is estimated to be 0.64%
+
+
+### Approach
+
+<h4 align="center">question -> input data -> features -> algorithm -> parameters -> evaluation</h4>
+
+*  An initial exploratory data analysis is conducted to identify data "tidiness" issues and potentially highly correlated independent variables.
+*  Derived data (variance, Standard deviation, min/max, average) with NA values are removed since it is not clear how they are calculated and imputing the values was not possible.  The number of variables was reduced to 53 from 160. 
+*  Since this is a classification prediction model, two(2) model approach are selected to be used: 
+   *  Gradient Boosting Machine (GBM)
+   *  Random Forest (RF)
+*  The imported training dataset was split into a *training dataset* (70% of the observations) and a *test dataset* (30% of the observations)
+
+### Cross-Validation and Training
+
+Cross-validation will be utilized for both the GBM and RF models.  
+
+1.  Split the *training* dataset into *5* smaller groups (i.e., "folds")
+2.  Use *4* datasets for training and the 5th set for validation
+3.  Use *test* dataset for prediction
+
+### Reference
+
+The Weight Lifting Exercise dataset is licensed under the Creative Commons license (CC BY-SA) and was downloaded from the work done by the following research team:
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. [Qualitative Activity Recognition of Weight Lifting Exercises](http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/work.jsf?p1=11201). Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+## EXPLORATORY DATA ANALYSIS
+
+Import training and testing datasets
+
+```{r dataimport}
+
+impTrain <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", header=TRUE)
+impTest <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", header=TRUE)
+
+
+```
+
+### Remove Unnecessary Columns for Model Generation
+
+There are columns with **NA** values which appear to be derived (calculated), however, the formulas used are unknown.  **The decision is to use the base sensor data for modeling**.   The resulting number of variables was reduced to 53 from 160. 
+
+The structure of the resulting clean-up data set is:
+
+``` {r dataCleanUp}
+#
+# USE A GENERALIZED FUNCTION TO APPLY TO BOTH THE TRAINING AND TEST DATASETS
+#
+dataPrep <- function(df) {
+        cleanData <- df[-c(1:5)]
+        cleanData <- cleanData[!grepl("^kurtosis_", colnames(cleanData))] 
+        cleanData <- cleanData[!grepl("^skewness_", colnames(cleanData))]
+        cleanData <- cleanData[!grepl("^stddev_", colnames(cleanData))] 
+        cleanData <- cleanData[!grepl("^max_", colnames(cleanData))]
+        cleanData <- cleanData[!grepl("^min_", colnames(cleanData))]
+        cleanData <- cleanData[!grepl("^avg_", colnames(cleanData))]
+        cleanData <- cleanData[!grepl("^var_", colnames(cleanData))]
+        cleanData <- cleanData[!grepl("^max_", colnames(cleanData))]
+        cleanData <- cleanData[!grepl("^amplitude_", colnames(cleanData))]
+        cleanData <- cleanData[!grepl("^num_window", colnames(cleanData))]
+
+        #  REMOVE "SUMMARY" ROWS
+        cleanData <- subset(cleanData, new_window != "yes")
+        cleanData <- cleanData[!grepl("^new_window", colnames(cleanData))]
+
+        
+        return(cleanData)
+}
+
+training <- dataPrep(impTrain)
+training$classe <- as.factor(training$classe)
+
+testing <- dataPrep(impTest)
+testing$classe <- as.factor(c(""))
+
+str(training)
+str(testing)
+
+```
+
+#### Prepare Training Datasets
+
+The decision was made to split the *training* dataset into a *training1* (70%) and *training2* (30%) dataset for additional model testing.  Model tuning (if required) will be based on results of *training2* modeling.
+
+``` {r trainingPrep}
+
+set.seed(330)
+
+splitRule <- trainControl(method="cv", number=5, classProbs=TRUE,
+                          savePredictions="all")
+## TRAINING SET IS SPLIT TO ALLOW "TUNING" BEFORE RUNNING AGAINST TEST SET
+trIndx <- createDataPartition(y=training$classe,p=.70,list=FALSE)
+
+trng1 <- training[trIndx,]
+trng2test <- training[-trIndx,]
+
+print(paste("Number of training1 observations = ", nrow(trng1)))
+print(paste("Number of training2 observations = ", nrow(trng2test)))
+
+```
+
+## Predictive Model Generation
+
+Since this is a classification prediction model, 2 approaches were chosen to model:
+
+*  Gradient Boosting Machine (GBM)
+*  Random Forest
+
+Both are run with 5-fold cross-validation.  The following Kappa "Rules of Thumb" for Interpretation of baseline model:
+
+*  .81 - 1.00  Almost perfect
+*  .61 -  .80  Substantial
+*  .41 -  .60  Moderate
+*  .21 -  .40  Fair
+*  .00 -  .20  Slight
+*   <     .00  Poor
+
+
+Comparison of the model indicates that the **random forest** should be more accurate.
+
+```{r model}
+
+splitRule <- trainControl(method="cv", number=5, classProbs=TRUE,
+                          savePredictions="all")
+gbmModel <- train(classe ~., data=trng1,
+                  trControl=splitRule,
+                  verbose=FALSE,
+                  method="gbm")
+predGBM <- predict(gbmModel, trng2test)
+
+rfModel <- train(classe ~., data=trng1,
+                  trControl=splitRule,
+                  method="rf")
+predRF <- predict(rfModel,trng2test)
+
+cmRF <- confusion_matrix(targets=trng2test$classe,predictions=predRF)
+cmGBM <- confusion_matrix(targets=trng2test$classe,predictions=predGBM)
+
+plotRF <- plot_confusion_matrix(cmRF$'Confusion Matrix'[[1]], 
+                                add_sums=TRUE,
+                                add_col_percentages = FALSE,
+                                rotate_y_text = TRUE,
+                                place_x_axis_above = FALSE,
+                                font_row_percentages = font(size=2),
+                                font_col_percentages = font(size=2),
+                                sums_settings=sum_tile_settings(palette="Oranges",
+                                                        label="Total",
+                                                        tc_tile_border_color="black")) +
+                ggplot2::labs(x = "Actual Values (Truth)", 
+                              y = "Prediction", 
+                              title = "RANDOM FOREST",
+                              subtitle = paste("Model Accuracy = ",
+                                               sprintf("%0.2f%%",round(cmRF$`Overall Accuracy`*100,digits=2))))
+
+plotGBM <- plot_confusion_matrix(cmGBM$'Confusion Matrix'[[1]], 
+                                add_sums=TRUE,
+                                add_col_percentages = FALSE,
+                                rotate_y_text = TRUE,
+                                place_x_axis_above = FALSE,
+                                font_row_percentages = font(size=2),
+                                font_col_percentages = font(size=2),
+                                sums_settings=sum_tile_settings(palette="Oranges",
+                                                        label="Total",
+                                                        tc_tile_border_color="black")) +
+        ggplot2::labs(x = "Actual Values (Truth)", 
+                              y = "Prediction", 
+                              title = "GRADIENT BOOSTING MACHINE",
+                              subtitle = paste("Model Accuracy = ",
+                                               sprintf("%0.2f%%",round(cmGBM$`Overall Accuracy`*100,digits=2))))
+
+grid.arrange(plotRF,plotGBM, top="CONFUSION MATRIX: COMPARISON OF CLASSIFICATION MODEL ACCURACY",ncol=2)
+
+```
+
+**Based on model accuracy, the Random Forest model is chosen for prediction**
+
+## Test 
+The Random Forest model is run against the *test* data set that was provided.  The expected (predicted) results are shown below.
+
+```{r TestRun}
+
+testPrediction <- predict(rfModel,testing)
+print(as.data.frame(testPrediction))
+
